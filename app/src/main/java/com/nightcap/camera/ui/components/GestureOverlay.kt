@@ -1,23 +1,31 @@
 package com.nightcap.camera.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun GestureOverlay(
@@ -27,10 +35,16 @@ fun GestureOverlay(
     currentExposureNs: Long,
     onIsoChanged: (Int, Float) -> Unit,
     onExposureChanged: (Long) -> Unit,
+    onTapToFocus: (Float, Float) -> Unit,
     content: @Composable () -> Unit
 ) {
     var hudText by remember { mutableStateOf("") }
     var isDragging by remember { mutableStateOf(false) }
+
+    // Toạ độ điểm lấy nét khi người dùng chạm
+    var focusTapPoint by remember { mutableStateOf<Offset?>(null) }
+    val focusScale = remember { Animatable(1.5f) }
+    val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(isDragging) {
         if (!isDragging) {
@@ -42,6 +56,21 @@ fun GestureOverlay(
     Box(
         modifier = modifier
             .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    val normX = offset.x / size.width
+                    val normY = offset.y / size.height
+                    focusTapPoint = offset
+                    onTapToFocus(normX, normY)
+
+                    coroutineScope.launch {
+                        focusScale.snapTo(1.4f)
+                        focusScale.animateTo(1.0f, tween(200))
+                        delay(900)
+                        focusTapPoint = null
+                    }
+                }
+            }
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = {
@@ -60,13 +89,11 @@ fun GestureOverlay(
 
                         if (Math.abs(dy) > Math.abs(dx)) {
                             // Vuốt dọc: Điều chỉnh ISO & ISO Boost
-                            // Vuốt lên: tăng, Vuốt xuống: giảm
-                            val isoDelta = (-dy * 8).toInt()
+                            val isoDelta = (-dy * 6).toInt()
                             var newIso = (currentIso + isoDelta).coerceIn(50, 6400)
                             var newBoost = isoBoost
 
                             if (newIso >= 3200 && dy < 0) {
-                                // Nếu đã đạt trần ISO phần cứng, kích hoạt ISO Boost kỹ thuật số
                                 newBoost = (isoBoost + 0.05f).coerceIn(1.0f, 8.0f)
                             } else if (newBoost > 1.0f && dy > 0) {
                                 newBoost = (isoBoost - 0.05f).coerceIn(1.0f, 8.0f)
@@ -75,11 +102,10 @@ fun GestureOverlay(
                             onIsoChanged(newIso, newBoost)
 
                             val boostText = if (newBoost > 1.0f) " (Boost ${String.format("%.1fx", newBoost)})" else ""
-                            hudText = "ISO $newIso$boostText"
+                            hudText = "ISO: $newIso$boostText"
                         } else {
                             // Vuốt ngang: Điều chỉnh tốc độ màn trập (Exposure Time)
-                            // Vuốt phải: phơi sáng dài hơn, Vuốt trái: ngắn hơn
-                            val exposureStep = (dx * 1_000_000L).toLong() // Bước dịch
+                            val exposureStep = (dx * 1_500_000L).toLong()
                             val newExposure = (currentExposureNs + exposureStep).coerceIn(1_000_000L, 1_000_000_000L)
                             onExposureChanged(newExposure)
 
@@ -98,7 +124,19 @@ fun GestureOverlay(
     ) {
         content()
 
-        // Hiển thị bong bóng thông số khi người dùng vuốt trên màn hình
+        // Hiển thị vòng tròn lấy nét (Focus Ring) khi chạm vào màn hình
+        focusTapPoint?.let { point ->
+            val primaryColor = MaterialTheme.colorScheme.primary
+            Box(
+                modifier = Modifier
+                    .offset(x = (point.x - 30).dp, y = (point.y - 30).dp)
+                    .size(60.dp)
+                    .scale(focusScale.value)
+                    .border(2.dp, primaryColor, CircleShape)
+            )
+        }
+
+        // Hiển thị thông số dạng HUD khi vuốt
         AnimatedVisibility(
             visible = hudText.isNotEmpty(),
             enter = fadeIn(),
@@ -107,7 +145,7 @@ fun GestureOverlay(
         ) {
             Box(
                 modifier = Modifier
-                    .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
                     .padding(horizontal = 24.dp, vertical = 12.dp)
             ) {
                 Text(

@@ -53,12 +53,13 @@ class GLTextureRenderer(
     var currentMode: StackingMode = StackingMode.STARS
     var isStackingActive: Boolean = false
     var isoBoost: Float = 1.0f
-    var noiseThreshold: Float = 0.02f
+    var noiseThreshold: Float = 0.0f // Mặc định không cắt sàn nhiễu để giữ nguyên chi tiết bóng tối
     var redVisionMode: Boolean = false
     var brightness: Float = 0.0f
     var contrast: Float = 1.0f
 
     // Callback chụp ảnh thành phẩm
+    @Volatile
     private var pendingCaptureCallback: ((Bitmap) -> Unit)? = null
 
     init {
@@ -130,16 +131,20 @@ class GLTextureRenderer(
 
         // -------------------------------------------------------------
         // Bước 1: Render OES Camera Texture vào FBO Current Frame
-        // Có áp dụng ma trận chống rung Gyro và ISO Boost
         // -------------------------------------------------------------
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, accum.currentFrameFbo)
         GLES30.glViewport(0, 0, surfaceWidth, surfaceHeight)
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
         GLES30.glUseProgram(programCameraInput)
 
         // Kết hợp ma trận Camera Transform và Ma trận ổn định Gyro
-        Matrix.multiplyMM(finalStabilizedMatrix, 0, cameraTransformMatrix, 0, gyroStabilizer.stabilizationMatrix, 0)
+        if (isStackingActive && gyroStabilizer.isEnabled) {
+            Matrix.multiplyMM(finalStabilizedMatrix, 0, cameraTransformMatrix, 0, gyroStabilizer.stabilizationMatrix, 0)
+        } else {
+            System.arraycopy(cameraTransformMatrix, 0, finalStabilizedMatrix, 0, 16)
+        }
 
         setMatrixUniform(programCameraInput, "uTransformMatrix", finalStabilizedMatrix)
         setFloatUniform(programCameraInput, "uIsoBoost", isoBoost)
@@ -152,14 +157,14 @@ class GLTextureRenderer(
         renderQuad()
 
         // -------------------------------------------------------------
-        // Bước 2: Thực hiện Xếp chồng khung hình (Image Stacking) nếu đang chụp
+        // Bước 2: Thực hiện Xếp chồng khung hình (Image Stacking) nếu đang bật
         // -------------------------------------------------------------
         if (isStackingActive) {
             val frameIndex = (accum.frameCount + 1).toFloat()
 
             when (currentMode) {
                 StackingMode.PHOTO -> {
-                    // Chế độ Photo: chỉ copy frame hiện tại vào accumulator
+                    // Chế độ Photo: copy frame hiện tại vào accumulator
                     copyTextureToFbo(accum.currentFrameTexture, accum.targetFbo)
                     accum.swapPingPong()
                 }
@@ -181,7 +186,7 @@ class GLTextureRenderer(
                 }
 
                 StackingMode.STARS -> {
-                    // Cumulative Running Mean (Giảm nhiễu, nâng dải Ngân Hà)
+                    // Cumulative Running Mean
                     GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, accum.targetFbo)
                     GLES30.glUseProgram(programStackAverage)
                     setMatrixUniform(programStackAverage, "uTransformMatrix", identityMatrix)
@@ -218,11 +223,10 @@ class GLTextureRenderer(
 
         // -------------------------------------------------------------
         // Bước 3: Hiển thị lên màn hình (Default Framebuffer 0)
-        // Hiển thị kết quả đang xếp chồng (hoặc preview trực tiếp)
-        // Kèm chế độ Red Lamp Mode thiên văn
         // -------------------------------------------------------------
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glViewport(0, 0, surfaceWidth, surfaceHeight)
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
         GLES30.glUseProgram(programDisplay)
@@ -241,10 +245,24 @@ class GLTextureRenderer(
         renderQuad()
 
         // -------------------------------------------------------------
-        // Bước 4: Kiểm tra yêu cầu lưu ảnh thành phẩm (Snapshot)
+        // Bước 4: Kiểm tra và xuất ảnh thành phẩm (Snapshot)
         // -------------------------------------------------------------
         pendingCaptureCallback?.let { callback ->
-            val bitmap = accum.readPixelsToBitmap()
+            val captureTexture = if (accum.frameCount > 0) {
+                accum.sourceTexture
+            } else {
+                accum.currentFrameTexture
+            }
+
+            val bitmap = accum.exportTextureToBitmap(
+                textureId = captureTexture,
+                programDisplay = programDisplay,
+                identityMatrix = identityMatrix,
+                quadBuffer = quadBuffer,
+                texBuffer = texBuffer,
+                brightness = brightness,
+                contrast = contrast
+            )
             callback(bitmap)
             pendingCaptureCallback = null
         }
@@ -259,6 +277,10 @@ class GLTextureRenderer(
     fun stopStacking(callback: (Bitmap) -> Unit) {
         isStackingActive = false
         gyroStabilizer.resetReference()
+        pendingCaptureCallback = callback
+    }
+
+    fun captureSinglePhoto(callback: (Bitmap) -> Unit) {
         pendingCaptureCallback = callback
     }
 

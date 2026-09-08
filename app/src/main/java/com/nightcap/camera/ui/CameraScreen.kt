@@ -30,20 +30,21 @@ fun CameraScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    // Khởi tạo các thành phần phần cứng
+    // Khởi tạo phần cứng
     val gyroStabilizer = remember { GyroStabilizer(context) }
     val cameraManager = remember { Camera2Manager(context) }
 
-    var selectedMode by remember { mutableStateOf(StackingMode.STARS) }
+    var selectedMode by remember { mutableStateOf(StackingMode.PHOTO) }
     var isStackingActive by remember { mutableStateOf(false) }
     var elapsedSeconds by remember { mutableIntStateOf(0) }
     var frameCount by remember { mutableIntStateOf(0) }
     var isGyroEnabled by remember { mutableStateOf(true) }
-    var isInfinityFocus by remember { mutableStateOf(true) }
+    var isInfinityFocus by remember { mutableStateOf(false) }
+    var isManualExposure by remember { mutableStateOf(false) }
     var isRedVision by remember { mutableStateOf(false) }
-    var currentIso by remember { mutableIntStateOf(1600) }
+    var currentIso by remember { mutableIntStateOf(400) }
     var isoBoost by remember { mutableFloatStateOf(1.0f) }
-    var exposureTimeNs by remember { mutableLongStateOf(250_000_000L) }
+    var exposureTimeNs by remember { mutableLongStateOf(33_333_333L) }
 
     // Khởi tạo OpenGL Renderer
     val renderer = remember {
@@ -59,7 +60,6 @@ fun CameraScreen(
         )
     }
 
-    // Cập nhật trạng thái vào Renderer khi thay đổi
     LaunchedEffect(selectedMode) {
         renderer.currentMode = selectedMode
     }
@@ -70,7 +70,7 @@ fun CameraScreen(
         renderer.redVisionMode = isRedVision
     }
 
-    // Vòng lặp đếm thời gian khi đang phơi sáng
+    // Đếm thời gian khi phơi sáng
     LaunchedEffect(isStackingActive) {
         if (isStackingActive) {
             elapsedSeconds = 0
@@ -81,7 +81,7 @@ fun CameraScreen(
         }
     }
 
-    // Quản lý vòng đời cảm biến Gyro
+    // Vòng đời cảm biến
     DisposableEffect(Unit) {
         cameraManager.startBackgroundThread()
         gyroStabilizer.start()
@@ -99,7 +99,7 @@ fun CameraScreen(
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
-            // Lớp 1: Khung ngắm Camera & OpenGL Stacking Preview
+            // Khung ngắm Camera OpenGL
             AndroidView(
                 factory = { ctx ->
                     GLSurfaceView(ctx).apply {
@@ -111,7 +111,7 @@ fun CameraScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // Lớp 2: Lớp lắng nghe cử chỉ vuốt để chỉnh ISO và Tốc độ màn trập
+            // Lớp cử chỉ vuốt & Chạm lấy nét (Tap to Focus)
             GestureOverlay(
                 currentIso = currentIso,
                 isoBoost = isoBoost,
@@ -119,14 +119,19 @@ fun CameraScreen(
                 onIsoChanged = { newIso, newBoost ->
                     currentIso = newIso
                     isoBoost = newBoost
+                    isManualExposure = true
                     cameraManager.setIso(newIso)
                 },
                 onExposureChanged = { newExposure ->
                     exposureTimeNs = newExposure
+                    isManualExposure = true
                     cameraManager.setExposureTime(newExposure)
+                },
+                onTapToFocus = { normX, normY ->
+                    cameraManager.tapToFocus(normX, normY)
                 }
             ) {
-                // Lớp 3: HUD hiển thị thông số và các nút tiện ích trên đỉnh
+                // HUD thông số và phím chức năng
                 StackingHUD(
                     isStackingActive = isStackingActive,
                     elapsedSeconds = elapsedSeconds,
@@ -134,6 +139,7 @@ fun CameraScreen(
                     mode = selectedMode,
                     isGyroEnabled = isGyroEnabled,
                     isInfinityFocus = isInfinityFocus,
+                    isManualExposure = isManualExposure,
                     isRedVision = isRedVision,
                     currentIso = currentIso,
                     isoBoost = isoBoost,
@@ -146,7 +152,7 @@ fun CameraScreen(
                         gyroStabilizer.isEnabled = isGyroEnabled
                         Toast.makeText(
                             context,
-                            if (isGyroEnabled) "Đã bật chống rung tay cầm" else "Đã tắt chống rung (Chế độ chân máy/Tripod)",
+                            if (isGyroEnabled) "Đã bật chống rung tay cầm" else "Đã tắt chống rung (Chế độ chân máy)",
                             Toast.LENGTH_SHORT
                         ).show()
                     },
@@ -155,14 +161,23 @@ fun CameraScreen(
                         cameraManager.toggleInfinityFocus(isInfinityFocus)
                         Toast.makeText(
                             context,
-                            if (isInfinityFocus) "Đã khóa nét vô cực (Infinity Focus ∞)" else "Lấy nét tự động (AF)",
+                            if (isInfinityFocus) "Đã khóa nét vô cực (∞)" else "Lấy nét tự động liên tục (AF)",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    onToggleExposureMode = {
+                        cameraManager.toggleAutoExposure()
+                        isManualExposure = cameraManager.isManualControl
+                        Toast.makeText(
+                            context,
+                            if (isManualExposure) "Đã chuyển sang chỉnh tay (Manual)" else "Đã bật Tự động đo sáng (Auto Exposure)",
                             Toast.LENGTH_SHORT
                         ).show()
                     }
                 )
             }
 
-            // Lớp 4: Thanh điều khiển dưới cùng (Nút Shutter, chọn chế độ, ISO Boost)
+            // Thanh điều khiển dưới cùng
             ManualControlBar(
                 modifier = Modifier.align(Alignment.BottomCenter),
                 selectedMode = selectedMode,
@@ -170,25 +185,53 @@ fun CameraScreen(
                 isoBoost = isoBoost,
                 onModeSelected = { mode ->
                     selectedMode = mode
+                    // Nếu người dùng chọn mode chụp thiên văn thì gợi ý thông số tối ưu ban đêm
+                    if (mode != StackingMode.PHOTO) {
+                        isManualExposure = true
+                        cameraManager.setExposureTime(250_000_000L) // 1/4s
+                        cameraManager.setIso(1600)
+                        currentIso = 1600
+                        exposureTimeNs = 250_000_000L
+                    } else {
+                        isManualExposure = false
+                        cameraManager.isManualControl = false
+                        cameraManager.updatePreview()
+                    }
                 },
                 onShutterClick = {
-                    if (!isStackingActive) {
-                        // Bắt đầu phiên phơi sáng / xếp chồng
-                        frameCount = 0
-                        isStackingActive = true
-                        renderer.startStacking()
-                        Toast.makeText(context, "Bắt đầu phơi sáng [${selectedMode.displayName}]", Toast.LENGTH_SHORT).show()
-                    } else {
-                        // Dừng phơi sáng và xuất ảnh độ phân giải cao
-                        isStackingActive = false
-                        renderer.stopStacking { bitmap ->
+                    if (selectedMode == StackingMode.PHOTO) {
+                        // CHỤP ĐƠN (PHOTO MODE): Chụp ngay 1 ảnh duy nhất không cần bấm Stop
+                        Toast.makeText(context, "Đang chụp ảnh...", Toast.LENGTH_SHORT).show()
+                        renderer.captureSinglePhoto { bitmap ->
                             coroutineScope.launch {
-                                val uri = ImageSaver.saveBitmapToGallery(context, bitmap, selectedMode.name)
+                                val uri = ImageSaver.saveBitmapToGallery(context, bitmap, "PHOTO")
                                 (context as? Activity)?.runOnUiThread {
                                     if (uri != null) {
-                                        Toast.makeText(context, "Đã lưu ảnh thiên văn vào Bộ sưu tập!", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(context, "Đã lưu ảnh vào Bộ sưu tập!", Toast.LENGTH_SHORT).show()
                                     } else {
                                         Toast.makeText(context, "Lỗi khi lưu ảnh", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // CHẾ ĐỘ XẾP CHỒNG (STARS, TRAILS, METEORS): Bấm lần 1 bắt đầu, Bấm lần 2 dừng
+                        if (!isStackingActive) {
+                            frameCount = 0
+                            isStackingActive = true
+                            renderer.startStacking()
+                            Toast.makeText(context, "Bắt đầu phơi sáng [${selectedMode.displayName}]", Toast.LENGTH_SHORT).show()
+                        } else {
+                            isStackingActive = false
+                            renderer.stopStacking { bitmap ->
+                                coroutineScope.launch {
+                                    val uri = ImageSaver.saveBitmapToGallery(context, bitmap, selectedMode.name)
+                                    (context as? Activity)?.runOnUiThread {
+                                        if (uri != null) {
+                                            Toast.makeText(context, "Đã lưu ảnh thiên văn ($frameCount frames) vào Bộ sưu tập!", Toast.LENGTH_LONG).show()
+                                        } else {
+                                            Toast.makeText(context, "Lỗi khi lưu ảnh", Toast.LENGTH_SHORT).show()
+                                        }
                                     }
                                 }
                             }

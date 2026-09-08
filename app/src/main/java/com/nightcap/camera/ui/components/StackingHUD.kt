@@ -1,7 +1,6 @@
 package com.nightcap.camera.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -32,25 +31,35 @@ fun StackingHUD(
     mode: StackingMode,
     isGyroEnabled: Boolean,
     isInfinityFocus: Boolean,
+    isManualExposure: Boolean,
     isRedVision: Boolean,
     currentIso: Int,
     isoBoost: Float,
     exposureTimeNs: Long,
     onToggleRedVision: () -> Unit,
     onToggleGyro: () -> Unit,
-    onToggleInfinityFocus: () -> Unit
+    onToggleInfinityFocus: () -> Unit,
+    onToggleExposureMode: () -> Unit
 ) {
     val seconds = exposureTimeNs / 1_000_000_000.0
-    val displayShutter = if (seconds >= 1.0) {
+    val displayShutter = if (!isManualExposure) {
+        "AUTO"
+    } else if (seconds >= 1.0) {
         String.format("%.1fs", seconds)
     } else {
         val fraction = Math.round(1.0 / seconds)
         "1/${fraction}s"
     }
 
+    val displayIso = if (!isManualExposure) {
+        "AUTO"
+    } else {
+        val boostLabel = if (isoBoost > 1.0f) " x${String.format("%.1f", isoBoost)}" else ""
+        "$currentIso$boostLabel"
+    }
+
     val primaryColor = MaterialTheme.colorScheme.primary
 
-    // Hiệu ứng nhấp nháy cho đèn báo Rec khi đang phơi sáng
     val infiniteTransition = rememberInfiniteTransition()
     val pulseAlpha by infiniteTransition.animateFloat(
         initialValue = 0.3f,
@@ -77,7 +86,7 @@ fun StackingHUD(
         ) {
             // Chế độ hiện tại
             Surface(
-                color = Color.Black.copy(alpha = 0.6f),
+                color = Color.Black.copy(alpha = 0.65f),
                 shape = RoundedCornerShape(20.dp),
                 border = androidx.compose.foundation.BorderStroke(1.dp, primaryColor.copy(alpha = 0.5f))
             ) {
@@ -104,23 +113,23 @@ fun StackingHUD(
             }
 
             // Các nút tiện ích nhanh trên cùng
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                // Nút Chống rung con quay hồi chuyển (Handheld Gyro)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Nút Chuyển đổi Auto Exposure / Manual Exposure
                 IconButton(
-                    onClick = onToggleGyro,
+                    onClick = onToggleExposureMode,
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(38.dp)
                         .background(
-                            if (isGyroEnabled) primaryColor.copy(alpha = 0.2f) else Color.Black.copy(alpha = 0.6f),
+                            if (isManualExposure) primaryColor.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.6f),
                             CircleShape
                         )
-                        .border(1.dp, if (isGyroEnabled) primaryColor else Color.Gray, CircleShape)
+                        .border(1.dp, if (isManualExposure) primaryColor else Color.Gray, CircleShape)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.ScreenRotation,
-                        contentDescription = "Gyroscope",
-                        tint = if (isGyroEnabled) primaryColor else Color.Gray,
-                        modifier = Modifier.size(20.dp)
+                    Text(
+                        text = if (isManualExposure) "M" else "A",
+                        color = if (isManualExposure) primaryColor else Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
                     )
                 }
 
@@ -128,9 +137,9 @@ fun StackingHUD(
                 IconButton(
                     onClick = onToggleInfinityFocus,
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(38.dp)
                         .background(
-                            if (isInfinityFocus) primaryColor.copy(alpha = 0.2f) else Color.Black.copy(alpha = 0.6f),
+                            if (isInfinityFocus) primaryColor.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.6f),
                             CircleShape
                         )
                         .border(1.dp, if (isInfinityFocus) primaryColor else Color.Gray, CircleShape)
@@ -139,7 +148,26 @@ fun StackingHUD(
                         imageVector = Icons.Default.AllInclusive,
                         contentDescription = "Infinity Focus",
                         tint = if (isInfinityFocus) primaryColor else Color.Gray,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                // Nút Chống rung con quay hồi chuyển (Handheld Gyro)
+                IconButton(
+                    onClick = onToggleGyro,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .background(
+                            if (isGyroEnabled) primaryColor.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.6f),
+                            CircleShape
+                        )
+                        .border(1.dp, if (isGyroEnabled) primaryColor else Color.Gray, CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ScreenRotation,
+                        contentDescription = "Gyroscope",
+                        tint = if (isGyroEnabled) primaryColor else Color.Gray,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
@@ -147,9 +175,9 @@ fun StackingHUD(
                 IconButton(
                     onClick = onToggleRedVision,
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(38.dp)
                         .background(
-                            if (isRedVision) Color.Red.copy(alpha = 0.3f) else Color.Black.copy(alpha = 0.6f),
+                            if (isRedVision) Color.Red.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.6f),
                             CircleShape
                         )
                         .border(1.dp, if (isRedVision) Color.Red else Color.Gray, CircleShape)
@@ -158,19 +186,19 @@ fun StackingHUD(
                         imageVector = Icons.Default.Visibility,
                         contentDescription = "Red Vision",
                         tint = if (isRedVision) Color.Red else Color.White,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
         }
 
-        // Bảng đếm thời gian và số frame đã xếp chồng (Xuất hiện khi đang chụp)
+        // Bảng đếm thời gian và số frame đã xếp chồng
         AnimatedVisibility(
             visible = isStackingActive,
             modifier = Modifier.align(Alignment.CenterHorizontally)
         ) {
             Surface(
-                color = Color.Black.copy(alpha = 0.75f),
+                color = Color.Black.copy(alpha = 0.8f),
                 shape = RoundedCornerShape(16.dp),
                 border = androidx.compose.foundation.BorderStroke(1.dp, primaryColor)
             ) {
@@ -202,11 +230,11 @@ fun StackingHUD(
 
         // Thanh thông số phơi sáng dưới cùng (Shutter, ISO, Focus)
         Surface(
-            color = Color.Black.copy(alpha = 0.65f),
+            color = Color.Black.copy(alpha = 0.7f),
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier
                 .align(Alignment.CenterHorizontally)
-                .padding(bottom = 120.dp)
+                .padding(bottom = 125.dp)
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
@@ -215,12 +243,11 @@ fun StackingHUD(
             ) {
                 ParamItem(label = "TỐC ĐỘ", value = displayShutter, color = primaryColor)
                 Box(modifier = Modifier.width(1.dp).height(18.dp).background(Color.DarkGray))
-                val boostLabel = if (isoBoost > 1.0f) " x${String.format("%.1f", isoBoost)}" else ""
-                ParamItem(label = "ISO", value = "$currentIso$boostLabel", color = primaryColor)
+                ParamItem(label = "ISO", value = displayIso, color = primaryColor)
                 Box(modifier = Modifier.width(1.dp).height(18.dp).background(Color.DarkGray))
                 ParamItem(
                     label = "TIÊU CỰ",
-                    value = if (isInfinityFocus) "∞ VÔ CỰC" else "AUTO",
+                    value = if (isInfinityFocus) "∞ VÔ CỰC" else "AUTO FOCUS",
                     color = primaryColor
                 )
             }
