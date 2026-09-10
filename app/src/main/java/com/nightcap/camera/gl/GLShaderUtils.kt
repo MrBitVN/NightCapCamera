@@ -12,7 +12,7 @@ import java.nio.FloatBuffer
 object GLShaderUtils {
     private const val TAG = "GLShaderUtils"
 
-    // Toạ độ Vertex toàn màn hình cho màn vẽ Quad (2 tam giác)
+    // Fullscreen quad vertex coordinates (2 triangles)
     private val QUAD_COORDS = floatArrayOf(
         -1.0f, -1.0f, 0.0f,
          1.0f, -1.0f, 0.0f,
@@ -20,7 +20,7 @@ object GLShaderUtils {
          1.0f,  1.0f, 0.0f
     )
 
-    // Toạ độ Texture [0, 1]
+    // Texture coordinates [0, 1]
     private val TEX_COORDS = floatArrayOf(
         0.0f, 0.0f,
         1.0f, 0.0f,

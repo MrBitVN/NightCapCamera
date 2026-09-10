@@ -52,11 +52,22 @@ class GLTextureRenderer(
     // Trạng thái vận hành
     var currentMode: StackingMode = StackingMode.STARS
     var isStackingActive: Boolean = false
+    var isFrontCamera: Boolean = false
     var isoBoost: Float = 1.0f
     var noiseThreshold: Float = 0.0f // Mặc định không cắt sàn nhiễu để giữ nguyên chi tiết bóng tối
     var redVisionMode: Boolean = false
     var brightness: Float = 0.0f
     var contrast: Float = 1.0f
+
+    var previewWidth: Int = 1920
+    var previewHeight: Int = 1080
+
+    fun setPreviewSize(width: Int, height: Int) {
+        if (width > 0 && height > 0) {
+            previewWidth = width
+            previewHeight = height
+        }
+    }
 
     // Callback chụp ảnh thành phẩm
     @Volatile
@@ -139,12 +150,47 @@ class GLTextureRenderer(
 
         GLES30.glUseProgram(programCameraInput)
 
-        // Kết hợp ma trận Camera Transform và Ma trận ổn định Gyro
-        if (isStackingActive && gyroStabilizer.isEnabled) {
-            Matrix.multiplyMM(finalStabilizedMatrix, 0, cameraTransformMatrix, 0, gyroStabilizer.stabilizationMatrix, 0)
-        } else {
-            System.arraycopy(cameraTransformMatrix, 0, finalStabilizedMatrix, 0, 16)
+        // -------------------------------------------------------------
+        // TÍNH TOÁN BÙ TRỪ TỶ LỆ KHUNG HÌNH (ASPECT RATIO CORRECTION)
+        // Triệt tiêu hoàn toàn méo hình, kéo dài mặt khi màn hình 20:9 hiển thị camera 16:9
+        // -------------------------------------------------------------
+        val camAspect = Math.min(previewWidth, previewHeight).toFloat() / Math.max(previewWidth, previewHeight).toFloat()
+        val screenAspect = Math.min(surfaceWidth, surfaceHeight).toFloat() / Math.max(surfaceWidth, surfaceHeight).toFloat()
+
+        val aspectMatrix = FloatArray(16)
+        Matrix.setIdentityM(aspectMatrix, 0)
+
+        if (screenAspect < camAspect && screenAspect > 0f) {
+            // Màn hình dài/hẹp hơn cảm biến camera (ví dụ màn 20:9 hoặc 19.5:9 so với camera 16:9)
+            // Cắt nhẹ chiều ngang (Center-Crop) để tỷ lệ chuẩn 1:1, khuôn mặt người tròn tự nhiên
+            val scaleX = screenAspect / camAspect
+            Matrix.translateM(aspectMatrix, 0, 0.5f, 0.5f, 0f)
+            Matrix.scaleM(aspectMatrix, 0, scaleX, 1.0f, 1.0f)
+            Matrix.translateM(aspectMatrix, 0, -0.5f, -0.5f, 0f)
+        } else if (screenAspect > camAspect && camAspect > 0f) {
+            // Màn hình vuông/ngắn hơn cảm biến camera
+            val scaleY = camAspect / screenAspect
+            Matrix.translateM(aspectMatrix, 0, 0.5f, 0.5f, 0f)
+            Matrix.scaleM(aspectMatrix, 0, 1.0f, scaleY, 1.0f)
+            Matrix.translateM(aspectMatrix, 0, -0.5f, -0.5f, 0f)
         }
+
+        // Kết hợp ma trận Camera Transform và Ma trận ổn định Gyro
+        val intermediateMatrix = FloatArray(16)
+        if (isStackingActive && gyroStabilizer.isEnabled) {
+            Matrix.multiplyMM(intermediateMatrix, 0, cameraTransformMatrix, 0, gyroStabilizer.stabilizationMatrix, 0)
+        } else {
+            System.arraycopy(cameraTransformMatrix, 0, intermediateMatrix, 0, 16)
+        }
+
+        // Tự động lật gương chiều ngang nếu dùng Camera Trước để người dùng nhìn tự nhiên
+        if (isFrontCamera) {
+            Matrix.translateM(intermediateMatrix, 0, 1.0f, 0.0f, 0.0f)
+            Matrix.scaleM(intermediateMatrix, 0, -1.0f, 1.0f, 1.0f)
+        }
+
+        // Nhân aspectMatrix vào intermediateMatrix: Giữ nguyên 100% hình học thực tế, KHÔNG BỊ DÀI MẶT
+        Matrix.multiplyMM(finalStabilizedMatrix, 0, intermediateMatrix, 0, aspectMatrix, 0)
 
         setMatrixUniform(programCameraInput, "uTransformMatrix", finalStabilizedMatrix)
         setFloatUniform(programCameraInput, "uIsoBoost", isoBoost)
@@ -163,8 +209,8 @@ class GLTextureRenderer(
             val frameIndex = (accum.frameCount + 1).toFloat()
 
             when (currentMode) {
-                StackingMode.PHOTO -> {
-                    // Chế độ Photo: copy frame hiện tại vào accumulator
+                StackingMode.PHOTO, StackingMode.VIDEO -> {
+                    // Chế độ Photo / Video: copy frame hiện tại vào accumulator
                     copyTextureToFbo(accum.currentFrameTexture, accum.targetFbo)
                     accum.swapPingPong()
                 }

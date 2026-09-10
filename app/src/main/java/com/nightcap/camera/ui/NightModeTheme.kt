@@ -9,14 +9,14 @@ val PureBlack = Color(0xFF000000)
 val DarkSurface = Color(0xFF0D0D0D)
 val DarkSurfaceVariant = Color(0xFF1A1A1A)
 
-// Bảng màu tiêu chuẩn (Standard NightCap Gold / Cyan / White)
+// Standard NightCap color palette (NightCap Gold / Cyan / White)
 val StandardPrimary = Color(0xFFFFCC00)
 val StandardAccent = Color(0xFF00E5FF)
 val StandardText = Color(0xFFFFFFFF)
 val StandardTextSecondary = Color(0xFFB0B0B0)
 
-// Bảng màu thiên văn đèn đỏ (Astronomy Red Vision Mode)
-// Bảo toàn khả năng thích nghi bóng tối của mắt khi ngắm sao ban đêm
+// Astronomy Red Vision Mode palette
+// Preserves eye dark adaptation during night sky observation
 val AstroRedPrimary = Color(0xFFFF1744)
 val AstroRedAccent = Color(0xFFD50000)
 val AstroRedText = Color(0xFFFF5252)

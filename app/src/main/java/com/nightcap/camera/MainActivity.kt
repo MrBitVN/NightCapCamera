@@ -38,10 +38,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Giữ màn hình luôn sáng trong suốt quá trình phơi sáng dài
+        // Keep screen on during long astrophotography exposures
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // Thiết lập chế độ Fullscreen Immersive tối đa cho trải nghiệm camera
+        // Set fullscreen immersive layout for modern camera viewfinder
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
         insetsController.hide(WindowInsetsCompat.Type.systemBars())
@@ -69,7 +69,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkAndRequestPermissions() {
-        val permissions = mutableListOf(Manifest.permission.CAMERA)
+        val permissions = mutableListOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO
+        )
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
             permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
@@ -97,14 +100,14 @@ fun PermissionRequiredScreen(onRequestPermission: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "Yêu cầu quyền truy cập Camera",
+            text = "Camera Permission Required",
             fontSize = 20.sp,
             fontWeight = FontWeight.Bold,
             color = Color.White
         )
         Spacer(modifier = Modifier.height(12.dp))
         Text(
-            text = "NightCap Camera cần quyền truy cập camera để điều khiển phơi sáng thủ công và cảm biến cho chụp ảnh thiên văn.",
+            text = "NightCap Camera requires camera access for manual exposure controls and astrophotography capturing.",
             fontSize = 14.sp,
             color = Color.Gray,
             lineHeight = 20.sp
@@ -114,7 +117,7 @@ fun PermissionRequiredScreen(onRequestPermission: () -> Unit) {
             onClick = onRequestPermission,
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
         ) {
-            Text("Cấp quyền truy cập", color = Color.Black, fontWeight = FontWeight.Bold)
+            Text("Grant Permission", color = Color.Black, fontWeight = FontWeight.Bold)
         }
     }
 }

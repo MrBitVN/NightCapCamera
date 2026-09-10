@@ -8,8 +8,21 @@
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
 .DS_Store
+build/
+**/build/
 /build
 /captures
 .externalNativeBuild
 .cxx
 local.properties
+
+# Xcode / macOS
+.DS_Store
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+build/
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.moved-aside

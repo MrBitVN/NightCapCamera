@@ -11,7 +11,7 @@ import android.util.Log
 class GyroStabilizer(context: Context) : SensorEventListener {
     companion object {
         private const val TAG = "GyroStabilizer"
-        // Tiêu cự giả lập cho camera góc rộng thông thường (tỉ lệ chuẩn)
+        // Simulated focal length scaling for standard wide angle camera
         private const val FOCAL_LENGTH_SCALE = 1.8f
     }
 
@@ -21,12 +21,12 @@ class GyroStabilizer(context: Context) : SensorEventListener {
 
     var isEnabled: Boolean = true
 
-    // Ma trận góc chuẩn tại thời điểm bấm chụp frame đầu tiên
+    // Reference orientation matrix at capture start
     private val referenceRotationMatrix = FloatArray(16)
     private val currentRotationMatrix = FloatArray(16)
     private val relativeRotationMatrix = FloatArray(16)
 
-    // Ma trận ổn định 4x4 truyền vào OpenGL Shader
+    // 4x4 stabilization matrix passed into OpenGL Shader
     val stabilizationMatrix = FloatArray(16)
 
     private var isCalibrated = false
@@ -55,7 +55,7 @@ class GyroStabilizer(context: Context) : SensorEventListener {
     }
 
     /**
-     * Khóa góc tham chiếu tại thời điểm bắt đầu phiên chụp (Capture Start)
+     * Lock reference orientation at capture session start
      */
     fun lockReferenceOrientation() {
         synchronized(this) {
@@ -66,7 +66,7 @@ class GyroStabilizer(context: Context) : SensorEventListener {
     }
 
     /**
-     * Reset góc tham chiếu
+     * Reset reference orientation
      */
     fun resetReference() {
         synchronized(this) {
@@ -93,33 +93,28 @@ class GyroStabilizer(context: Context) : SensorEventListener {
                     isCalibrated = true
                 }
 
-                // Tính toán ma trận lệch: R_rel = R_ref^T * R_current
-                // (Nghịch đảo của ma trận trực giao là chuyển vị của nó)
+                // Relative rotation matrix: R_rel = R_ref^T * R_current
                 val refTranspose = FloatArray(16)
                 Matrix.transposeM(refTranspose, 0, referenceRotationMatrix, 0)
                 Matrix.multiplyMM(relativeRotationMatrix, 0, refTranspose, 0, currentRotationMatrix, 0)
 
-                // Rút trích góc Euler (Yaw, Pitch, Roll)
+                // Extract Euler angles (Yaw, Pitch, Roll)
                 val orientation = FloatArray(3)
                 SensorManager.getOrientation(relativeRotationMatrix, orientation)
-                val deltaYaw = orientation[0]   // Xoay quanh Z
-                val deltaPitch = orientation[1] // Xoay quanh X
-                val deltaRoll = orientation[2]  // Xoay quanh Y
+                val deltaYaw = orientation[0]   // Z axis rotation
+                val deltaPitch = orientation[1] // X axis rotation
+                val deltaRoll = orientation[2]  // Y axis rotation
 
-                // Bù trừ rung tay bằng dịch chuyển texture offset (Homography approximation)
+                // Compensate handheld shake via texture offset
                 val shiftX = -deltaRoll * FOCAL_LENGTH_SCALE
                 val shiftY = deltaPitch * FOCAL_LENGTH_SCALE
                 val angleDeg = Math.toDegrees(-deltaYaw.toDouble()).toFloat()
 
-                // Tạo ma trận biến đổi OpenGL để dịch và xoay khung hình về đúng vị trí chuẩn
+                // Create OpenGL transform matrix to counteract handheld shake
                 Matrix.setIdentityM(stabilizationMatrix, 0)
-                // Dịch chuyển tâm về (0.5, 0.5)
                 Matrix.translateM(stabilizationMatrix, 0, 0.5f, 0.5f, 0.0f)
-                // Xoay khử rung quanh trục Z
                 Matrix.rotateM(stabilizationMatrix, 0, angleDeg, 0.0f, 0.0f, 1.0f)
-                // Dịch chuyển bù rung tay X và Y
                 Matrix.translateM(stabilizationMatrix, 0, shiftX, shiftY, 0.0f)
-                // Đưa tâm trở lại (0, 0)
                 Matrix.translateM(stabilizationMatrix, 0, -0.5f, -0.5f, 0.0f)
             }
         }

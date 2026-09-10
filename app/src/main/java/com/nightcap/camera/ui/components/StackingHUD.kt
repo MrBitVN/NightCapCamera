@@ -4,7 +4,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,36 +27,18 @@ fun StackingHUD(
     isStackingActive: Boolean,
     elapsedSeconds: Int,
     frameCount: Int,
+    isRecordingVideo: Boolean,
+    recordingSeconds: Int,
     mode: StackingMode,
     isGyroEnabled: Boolean,
-    isInfinityFocus: Boolean,
-    isManualExposure: Boolean,
     isRedVision: Boolean,
-    currentIso: Int,
-    isoBoost: Float,
-    exposureTimeNs: Long,
+    isTorchOn: Boolean,
+    isFrontCamera: Boolean,
     onToggleRedVision: () -> Unit,
     onToggleGyro: () -> Unit,
-    onToggleInfinityFocus: () -> Unit,
-    onToggleExposureMode: () -> Unit
+    onToggleTorch: () -> Unit,
+    onSwitchCamera: () -> Unit
 ) {
-    val seconds = exposureTimeNs / 1_000_000_000.0
-    val displayShutter = if (!isManualExposure) {
-        "AUTO"
-    } else if (seconds >= 1.0) {
-        String.format("%.1fs", seconds)
-    } else {
-        val fraction = Math.round(1.0 / seconds)
-        "1/${fraction}s"
-    }
-
-    val displayIso = if (!isManualExposure) {
-        "AUTO"
-    } else {
-        val boostLabel = if (isoBoost > 1.0f) " x${String.format("%.1f", isoBoost)}" else ""
-        "$currentIso$boostLabel"
-    }
-
     val primaryColor = MaterialTheme.colorScheme.primary
 
     val infiniteTransition = rememberInfiniteTransition()
@@ -73,28 +54,28 @@ fun StackingHUD(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // Thanh tiêu đề trên cùng
+        // Top Header Bar
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 28.dp),
+                .fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Chế độ hiện tại
+            // Current Mode Badge
             Surface(
                 color = Color.Black.copy(alpha = 0.65f),
                 shape = RoundedCornerShape(20.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, primaryColor.copy(alpha = 0.5f))
+                border = androidx.compose.foundation.BorderStroke(1.dp, if (isRecordingVideo) Color.Red else primaryColor.copy(alpha = 0.5f))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (isStackingActive) {
+                    if (isStackingActive || isRecordingVideo) {
                         Box(
                             modifier = Modifier
                                 .size(10.dp)
@@ -104,55 +85,55 @@ fun StackingHUD(
                         Spacer(modifier = Modifier.width(8.dp))
                     }
                     Text(
-                        text = mode.displayName,
-                        color = primaryColor,
+                        text = if (isRecordingVideo) "REC" else mode.displayName.uppercase(),
+                        color = if (isRecordingVideo) Color.Red else primaryColor,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
 
-            // Các nút tiện ích nhanh trên cùng
+            // Quick utility buttons on top
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Nút Chuyển đổi Auto Exposure / Manual Exposure
+                // Switch Front / Back Camera (Selfie Flip)
                 IconButton(
-                    onClick = onToggleExposureMode,
+                    onClick = onSwitchCamera,
                     modifier = Modifier
                         .size(38.dp)
                         .background(
-                            if (isManualExposure) primaryColor.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.6f),
+                            if (isFrontCamera) primaryColor.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.6f),
                             CircleShape
                         )
-                        .border(1.dp, if (isManualExposure) primaryColor else Color.Gray, CircleShape)
-                ) {
-                    Text(
-                        text = if (isManualExposure) "M" else "A",
-                        color = if (isManualExposure) primaryColor else Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
-                }
-
-                // Nút Khóa nét vô cực (Infinity Focus)
-                IconButton(
-                    onClick = onToggleInfinityFocus,
-                    modifier = Modifier
-                        .size(38.dp)
-                        .background(
-                            if (isInfinityFocus) primaryColor.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.6f),
-                            CircleShape
-                        )
-                        .border(1.dp, if (isInfinityFocus) primaryColor else Color.Gray, CircleShape)
+                        .border(1.dp, if (isFrontCamera) primaryColor else Color.Gray, CircleShape)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.AllInclusive,
-                        contentDescription = "Infinity Focus",
-                        tint = if (isInfinityFocus) primaryColor else Color.Gray,
-                        modifier = Modifier.size(20.dp)
+                        imageVector = Icons.Default.FlipCameraAndroid,
+                        contentDescription = "Switch Camera",
+                        tint = if (isFrontCamera) primaryColor else Color.White,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
-                // Nút Chống rung con quay hồi chuyển (Handheld Gyro)
+                // Torch / Flashlight
+                IconButton(
+                    onClick = onToggleTorch,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .background(
+                            if (isTorchOn) primaryColor.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.6f),
+                            CircleShape
+                        )
+                        .border(1.dp, if (isTorchOn) primaryColor else Color.Gray, CircleShape)
+                ) {
+                    Icon(
+                        imageVector = if (isTorchOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                        contentDescription = "Flash/Torch",
+                        tint = if (isTorchOn) primaryColor else Color.Gray,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // Handheld Gyroscope Stabilization
                 IconButton(
                     onClick = onToggleGyro,
                     modifier = Modifier
@@ -171,7 +152,7 @@ fun StackingHUD(
                     )
                 }
 
-                // Nút Chế độ Red Vision đèn đỏ ngắm sao
+                // Astronomy Red Vision Mode
                 IconButton(
                     onClick = onToggleRedVision,
                     modifier = Modifier
@@ -192,18 +173,52 @@ fun StackingHUD(
             }
         }
 
-        // Bảng đếm thời gian và số frame đã xếp chồng
+        // Video Recording Timer Display
+        AnimatedVisibility(
+            visible = isRecordingVideo,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        ) {
+            Surface(
+                color = Color.Black.copy(alpha = 0.85f),
+                shape = RoundedCornerShape(20.dp),
+                border = androidx.compose.foundation.BorderStroke(1.5.dp, Color.Red)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 22.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .clip(CircleShape)
+                            .background(Color.Red.copy(alpha = pulseAlpha))
+                    )
+                    val recMin = recordingSeconds / 60
+                    val recSec = recordingSeconds % 60
+                    Text(
+                        text = String.format("REC %02d:%02d", recMin, recSec),
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            }
+        }
+
+        // Stacking Exposure Timer & Frame Counter Display
         AnimatedVisibility(
             visible = isStackingActive,
             modifier = Modifier.align(Alignment.CenterHorizontally)
         ) {
             Surface(
-                color = Color.Black.copy(alpha = 0.8f),
-                shape = RoundedCornerShape(16.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, primaryColor)
+                color = Color.Black.copy(alpha = 0.85f),
+                shape = RoundedCornerShape(18.dp),
+                border = androidx.compose.foundation.BorderStroke(1.5.dp, primaryColor)
             ) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 14.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     val minutes = elapsedSeconds / 60
@@ -213,13 +228,13 @@ fun StackingHUD(
                     Text(
                         text = timeFormatted,
                         color = Color.White,
-                        fontSize = 32.sp,
+                        fontSize = 36.sp,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Đã xếp chồng $frameCount khung hình",
+                        text = "Stacked $frameCount frames",
                         color = primaryColor,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Medium
@@ -228,48 +243,7 @@ fun StackingHUD(
             }
         }
 
-        // Thanh thông số phơi sáng dưới cùng (Shutter, ISO, Focus)
-        Surface(
-            color = Color.Black.copy(alpha = 0.7f),
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .padding(bottom = 125.dp)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(20.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                ParamItem(label = "TỐC ĐỘ", value = displayShutter, color = primaryColor)
-                Box(modifier = Modifier.width(1.dp).height(18.dp).background(Color.DarkGray))
-                ParamItem(label = "ISO", value = displayIso, color = primaryColor)
-                Box(modifier = Modifier.width(1.dp).height(18.dp).background(Color.DarkGray))
-                ParamItem(
-                    label = "TIÊU CỰ",
-                    value = if (isInfinityFocus) "∞ VÔ CỰC" else "AUTO FOCUS",
-                    color = primaryColor
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ParamItem(label: String, value: String, color: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = label,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.Gray,
-            letterSpacing = 1.sp
-        )
-        Text(
-            text = value,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = color
-        )
+        // Spacer to balance SpaceBetween vertical alignment
+        Spacer(modifier = Modifier.height(1.dp))
     }
 }

@@ -43,36 +43,42 @@
 
 ```
 nightcapcamera/
-├── app/
+├── app/                                       # Android Native (Kotlin + Jetpack Compose + OpenGL ES 3.0)
 │   ├── src/main/
 │   │   ├── AndroidManifest.xml
-│   │   ├── assets/shaders/
-│   │   │   ├── passthrough.vert          # Vertex shader với ma trận biến đổi
-│   │   │   ├── camera_input.frag         # OES texture to 2D + ISO Boost
-│   │   │   ├── stack_max.frag            # Star Trails & Light Trails (Max blending)
-│   │   │   ├── stack_average.frag        # Stars Mode (Cumulative Running Mean)
-│   │   │   ├── stack_meteor.frag         # Meteor & ISS detection
-│   │   │   └── display.frag              # Tone mapping & Red Vision mode
+│   │   ├── assets/shaders/                   # Shaders OpenGL ES 3.0
 │   │   ├── java/com/nightcap/camera/
-│   │   │   ├── MainActivity.kt           # Fullscreen Immersive & Permission
-│   │   │   ├── engine/
-│   │   │   │   ├── Camera2Manager.kt     # Manual sensor control (ISO, Shutter, Focus)
-│   │   │   │   ├── GyroStabilizer.kt     # Chống rung IMU Handheld Stabilization
-│   │   │   │   └── StackingMode.kt       # Enum các chế độ chụp
-│   │   │   ├── gl/
-│   │   │   │   ├── GLShaderUtils.kt      # Compile/Link shader và quản lý Buffer
-│   │   │   │   ├── TextureAccumulator.kt # Ping-Pong FBO FP16 double buffering
-│   │   │   │   └── GLTextureRenderer.kt  # GPU Rendering pipeline & Stacking
-│   │   │   ├── ui/
-│   │   │   │   ├── CameraScreen.kt       # Giao diện chính Jetpack Compose
-│   │   │   │   ├── NightModeTheme.kt     # Bảng màu OLED & Red Vision
-│   │   │   │   └── components/
-│   │   │   │       ├── GestureOverlay.kt # Điều khiển vuốt ISO / Shutter
-│   │   │   │       ├── StackingHUD.kt    # Đếm giờ, số frame, thông số
-│   │   │   │       └── ManualControlBar.kt # Nút Shutter, chọn Mode, Boost
-│   │   │   └── util/
-│   │   │       └── ImageSaver.kt         # Lưu ảnh chất lượng cao vào MediaStore
-│   │   └── res/                          # Vector icons, colors, themes
+│   │   │   ├── MainActivity.kt
+│   │   │   ├── engine/                       # Camera2Manager, GyroStabilizer, StackingMode
+│   │   │   ├── gl/                           # GLTextureRenderer, TextureAccumulator
+│   │   │   ├── ui/                           # CameraScreen, GestureOverlay, HUD, Sliders
+│   │   │   └── util/ImageSaver.kt
+│   │   └── res/
+│   └── build.gradle.kts
+├── iosApp/                                    # iOS Native (Swift + SwiftUI + Metal + AVFoundation)
+│   ├── NightCapCamera.xcodeproj/             # Xcode Project configuration
+│   └── NightCapCamera/
+│       ├── NightCapCameraApp.swift           # SwiftUI App entry point
+│       ├── Info.plist                        # Camera, Mic & Photos permissions
+│       ├── Engine/
+│       │   ├── AVCameraManager.swift         # AVFoundation manual controls, video & zoom
+│       │   ├── IOSGyroStabilizer.swift       # CoreMotion gyroscope stabilization
+│       │   └── StackingMode.swift            # 6 astrophotography & long exposure modes
+│       ├── Metal/
+│       │   ├── Shaders.metal                 # Metal compute & render shaders
+│       │   ├── MetalTextureAccumulator.swift # Double-buffered ping-pong Metal textures
+│       │   ├── MetalRenderer.swift           # 60fps realtime rendering & stacking
+│       │   └── MetalViewRepresentable.swift  # SwiftUI MTKView wrapper
+│       ├── UI/
+│       │   ├── CameraView.swift              # Main SwiftUI camera screen
+│       │   ├── NightCapTheme.swift           # Standard Gold & Red Vision palettes
+│       │   └── Components/
+│       │       ├── GestureOverlayView.swift  # 2-finger pinch-to-zoom & tap-to-focus
+│       │       ├── StackingHUDView.swift     # Top status, timers, utility buttons
+│       │       ├── ParameterSliderBarView.swift # Fine-tuning sliders (Shutter, ISO, Focus, EV)
+│       │       └── ManualControlBarView.swift # Control chips, mode selector & shutter
+│       └── Util/
+│           └── IOSImageSaver.swift           # Photos framework saving to NightCap album
 ├── gradle/
 │   └── libs.versions.toml                # Quản lý phiên bản dependencies
 ├── build.gradle.kts
