@@ -3,6 +3,7 @@ import Metal
 import MetalKit
 import CoreMedia
 import CoreVideo
+import CoreImage
 import UIKit
 
 public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate, ObservableObject {
@@ -11,12 +12,12 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
     public let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private var textureCache: CVMetalTextureCache?
+    private let ciContext: CIContext
 
     // Texture Accumulator
     public let accumulator: MetalTextureAccumulator
 
     // Compute and Render pipelines
-    private var inputRenderPipeline: MTLRenderPipelineState?
     private var displayRenderPipeline: MTLRenderPipelineState?
     private var averageComputePipeline: MTLComputePipelineState?
     private var maxComputePipeline: MTLComputePipelineState?
@@ -36,9 +37,10 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
     public var onFrameProcessed: ((Int) -> Void)?
 
     private var latestPixelBuffer: CVPixelBuffer?
+    private var needsClearAccumulator: Bool = false
     private let frameLock = NSLock()
 
-    // Fullscreen quad vertices (2 triangles)
+    // Fullscreen quad vertices (triangle strip: x, y, u, v)
     private let quadVertices: [Float] = [
         // x,    y,    u,    v
         -1.0, -1.0,  0.0,  1.0,
@@ -54,6 +56,7 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
         }
         self.device = dev
         self.commandQueue = queue
+        self.ciContext = CIContext(mtlDevice: dev)
         self.accumulator = MetalTextureAccumulator(device: dev)
 
         super.init()
@@ -65,7 +68,7 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
 
     private func setupPipelines() {
         guard let library = device.makeDefaultLibrary() else {
-            print("Failed to create default Metal library")
+            print("MetalRenderer Error: Failed to create default Metal library")
             return
         }
 
@@ -77,12 +80,32 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
         samplerDesc.tAddressMode = .clampToEdge
         samplerState = device.makeSamplerState(descriptor: samplerDesc)
 
+        // Vertex Descriptor matching VertexIn in Shaders.metal
+        let vertexDescriptor = MTLVertexDescriptor()
+        // attribute(0): float4 position (fed by float2 x, y)
+        vertexDescriptor.attributes[0].format = .float2
+        vertexDescriptor.attributes[0].offset = 0
+        vertexDescriptor.attributes[0].bufferIndex = 0
+        // attribute(1): float2 texCoords (u, v)
+        vertexDescriptor.attributes[1].format = .float2
+        vertexDescriptor.attributes[1].offset = MemoryLayout<Float>.stride * 2
+        vertexDescriptor.attributes[1].bufferIndex = 0
+        // layout(0)
+        vertexDescriptor.layouts[0].stride = MemoryLayout<Float>.stride * 4
+        vertexDescriptor.layouts[0].stepFunction = .perVertex
+
         // Display pipeline
         let displayDesc = MTLRenderPipelineDescriptor()
         displayDesc.vertexFunction = library.makeFunction(name: "passthrough_vertex")
         displayDesc.fragmentFunction = library.makeFunction(name: "display_fragment")
+        displayDesc.vertexDescriptor = vertexDescriptor
         displayDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
-        displayRenderPipeline = try? device.makeRenderPipelineState(descriptor: displayDesc)
+
+        do {
+            displayRenderPipeline = try device.makeRenderPipelineState(descriptor: displayDesc)
+        } catch {
+            print("MetalRenderer Error: Failed to create displayRenderPipeline: \(error)")
+        }
 
         // Compute pipelines
         if let avgFunc = library.makeFunction(name: "stack_average_kernel") {
@@ -105,29 +128,142 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
     }
 
     public func startStacking() {
+        frameLock.lock()
         frameCount = 0
         isStackingActive = true
-        accumulator.clearAccumulator()
+        needsClearAccumulator = true
+        frameLock.unlock()
         IOSGyroStabilizer.shared.lockReferenceOrientation()
     }
 
     public func stopStacking(completion: @escaping (UIImage?) -> Void) {
+        frameLock.lock()
         isStackingActive = false
+        frameLock.unlock()
         IOSGyroStabilizer.shared.resetReference()
-        let image = accumulator.exportUIImage()
-        completion(image)
+
+        let boost = self.isoBoost
+        let redVision = self.isRedVision
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            // Wait for any in-flight GPU work to finish before reading the texture
+            if let syncBuffer = self.commandQueue.makeCommandBuffer() {
+                syncBuffer.commit()
+                syncBuffer.waitUntilCompleted()
+            }
+
+            var image = self.accumulator.exportUIImage(ciContext: self.ciContext)
+            if let img = image, (boost > 1.0 || redVision) {
+                image = self.applyDisplayEffects(to: img, isoBoost: boost, isRedVision: redVision)
+            }
+            DispatchQueue.main.async {
+                completion(image)
+            }
+        }
     }
 
     public func resetStacking() {
+        frameLock.lock()
         isStackingActive = false
         frameCount = 0
-        accumulator.clearAccumulator()
+        needsClearAccumulator = true
+        frameLock.unlock()
         IOSGyroStabilizer.shared.resetReference()
     }
 
     public func captureSinglePhoto(completion: @escaping (UIImage?) -> Void) {
-        let image = accumulator.exportUIImage()
-        completion(image)
+        frameLock.lock()
+        let pixelBuffer = latestPixelBuffer
+        frameLock.unlock()
+
+        guard let pb = pixelBuffer else {
+            DispatchQueue.main.async { completion(nil) }
+            return
+        }
+
+        let boost = self.isoBoost
+        let redVision = self.isRedVision
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+
+            var ciImage = CIImage(cvPixelBuffer: pb)
+
+            // Apply digital ISO boost if > 1.0
+            if boost > 1.0 {
+                let exposureEV = log2(boost)
+                if let filter = CIFilter(name: "CIExposureAdjust") {
+                    filter.setValue(ciImage, forKey: kCIInputImageKey)
+                    filter.setValue(exposureEV, forKey: kCIInputEVKey)
+                    if let output = filter.outputImage {
+                        ciImage = output
+                    }
+                }
+            }
+
+            // Apply Astronomy Red Vision filter if enabled
+            if redVision {
+                if let mono = CIFilter(name: "CIColorMatrix") {
+                    mono.setValue(ciImage, forKey: kCIInputImageKey)
+                    mono.setValue(CIVector(x: 0.299, y: 0.587, z: 0.114, w: 0), forKey: "inputRVector")
+                    mono.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputGVector")
+                    mono.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBVector")
+                    mono.setValue(CIVector(x: 0, y: 0, z: 0, w: 1), forKey: "inputAVector")
+                    if let output = mono.outputImage {
+                        ciImage = output
+                    }
+                }
+            }
+
+            guard let cgImage = self.ciContext.createCGImage(ciImage, from: ciImage.extent) else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+
+            let uiImage = UIImage(cgImage: cgImage, scale: 1.0, orientation: .up)
+            DispatchQueue.main.async {
+                completion(uiImage)
+            }
+        }
+    }
+
+    private func applyDisplayEffects(to image: UIImage, isoBoost: Float, isRedVision: Bool) -> UIImage? {
+        guard let cg = image.cgImage else { return image }
+        var ciImage = CIImage(cgImage: cg)
+
+        if isoBoost > 1.0 {
+            let exposureEV = log2(isoBoost)
+            if let filter = CIFilter(name: "CIExposureAdjust") {
+                filter.setValue(ciImage, forKey: kCIInputImageKey)
+                filter.setValue(exposureEV, forKey: kCIInputEVKey)
+                if let output = filter.outputImage {
+                    ciImage = output
+                }
+            }
+        }
+
+        if isRedVision {
+            if let mono = CIFilter(name: "CIColorMatrix") {
+                mono.setValue(ciImage, forKey: kCIInputImageKey)
+                mono.setValue(CIVector(x: 0.299, y: 0.587, z: 0.114, w: 0), forKey: "inputRVector")
+                mono.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputGVector")
+                mono.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBVector")
+                mono.setValue(CIVector(x: 0, y: 0, z: 0, w: 1), forKey: "inputAVector")
+                if let output = mono.outputImage {
+                    ciImage = output
+                }
+            }
+        }
+
+        guard let outCG = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return image }
+        return UIImage(cgImage: outCG, scale: 1.0, orientation: .up)
     }
 
     // MARK: - CameraFrameDelegate
@@ -137,16 +273,12 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
         frameLock.lock()
         latestPixelBuffer = pixelBuffer
         frameLock.unlock()
-
-        let w = CVPixelBufferGetWidth(pixelBuffer)
-        let h = CVPixelBufferGetHeight(pixelBuffer)
-        accumulator.setDimensions(width: w, height: h)
     }
 
     // MARK: - MTKViewDelegate
 
     public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        // Handle resize if needed
+        // Handled dynamically in draw
     }
 
     public func draw(in view: MTKView) {
@@ -158,9 +290,16 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
 
         frameLock.lock()
         let pixelBuffer = latestPixelBuffer
+        let shouldClear = needsClearAccumulator
+        let stackingActive = isStackingActive
+        needsClearAccumulator = false
         frameLock.unlock()
 
         guard let pb = pixelBuffer, let cache = textureCache else {
+            // Clear screen to black when waiting for first camera frame
+            if let clearEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc) {
+                clearEncoder.endEncoding()
+            }
             commandBuffer.present(drawable)
             commandBuffer.commit()
             return
@@ -168,6 +307,12 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
 
         let w = CVPixelBufferGetWidth(pb)
         let h = CVPixelBufferGetHeight(pb)
+
+        // Safely update accumulator dimensions and clear on render thread
+        accumulator.setDimensions(width: w, height: h)
+        if shouldClear {
+            accumulator.clearAccumulator()
+        }
 
         // Create Metal texture from CVPixelBuffer directly without CPU copying
         var cvMetalTexture: CVMetalTexture?
@@ -190,22 +335,22 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
         }
 
         // Process Stacking Compute Pass
-        if isStackingActive {
+        if stackingActive {
             frameCount += 1
             processStacking(commandBuffer: commandBuffer, currentTexture: cameraTexture)
+            let countSnapshot = frameCount
             DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.onFrameProcessed?(self.frameCount)
+                self?.onFrameProcessed?(countSnapshot)
             }
         }
 
         // Render to Screen Display
-        let sourceTexture = isStackingActive ? (accumulator.currentSourceTexture ?? cameraTexture) : cameraTexture
+        let sourceTexture = stackingActive ? (accumulator.currentSourceTexture ?? cameraTexture) : cameraTexture
         renderToDisplay(
             commandBuffer: commandBuffer,
             renderPassDesc: renderPassDesc,
-            drawable: drawable,
-            texture: sourceTexture
+            texture: sourceTexture,
+            applyStabilization: stackingActive
         )
 
         commandBuffer.present(drawable)
@@ -261,14 +406,32 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
         computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
         computeEncoder.endEncoding()
 
+        // Save current frame for Meteor mode frame differencing on next frame
+        if currentMode == .meteors,
+           let prevFrameTex = accumulator.prevFrameTexture,
+           let blitEncoder = commandBuffer.makeBlitCommandEncoder() {
+            blitEncoder.copy(
+                from: currentTexture,
+                sourceSlice: 0,
+                sourceLevel: 0,
+                sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                sourceSize: MTLSize(width: currentTexture.width, height: currentTexture.height, depth: 1),
+                to: prevFrameTex,
+                destinationSlice: 0,
+                destinationLevel: 0,
+                destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+            )
+            blitEncoder.endEncoding()
+        }
+
         accumulator.swapBuffers()
     }
 
     private func renderToDisplay(
         commandBuffer: MTLCommandBuffer,
         renderPassDesc: MTLRenderPassDescriptor,
-        drawable: CAMetalDrawable,
-        texture: MTLTexture
+        texture: MTLTexture,
+        applyStabilization: Bool
     ) {
         guard let pipeline = displayRenderPipeline,
               let vBuf = vertexBuffer,
@@ -279,9 +442,11 @@ public final class MetalRenderer: NSObject, MTKViewDelegate, CameraFrameDelegate
         renderEncoder.setRenderPipelineState(pipeline)
         renderEncoder.setVertexBuffer(vBuf, offset: 0, index: 0)
 
-        // Uniforms
+        // Only apply gyro stabilization during active stacking so viewfinder stays centered
+        let stabMatrix = applyStabilization ? IOSGyroStabilizer.shared.stabilizationMatrix : matrix_identity_float4x4
+
         var uniforms = Uniforms(
-            stabilizationMatrix: IOSGyroStabilizer.shared.stabilizationMatrix,
+            stabilizationMatrix: stabMatrix,
             aspectMatrix: matrix_identity_float4x4,
             isoBoost: isoBoost,
             isRedVision: isRedVision ? 1 : 0,

@@ -137,7 +137,7 @@ kernel void stack_meteor_kernel(
     nextAccumulator.write(result, gid);
 }
 
-// Display Fragment Shader: Tone Mapping & Astronomy Red Vision Mode
+// Display Fragment Shader: ISO Boost, Tone Mapping & Astronomy Red Vision Mode
 fragment float4 display_fragment(
     VertexOut in [[stage_in]],
     texture2d<float> displayTexture [[texture(0)]],
@@ -145,11 +145,12 @@ fragment float4 display_fragment(
     constant Uniforms &uniforms [[buffer(1)]]
 ) {
     float4 color = displayTexture.sample(textureSampler, in.texCoords);
+    color.rgb *= max(uniforms.isoBoost, 1.0);
 
     if (uniforms.isRedVision == 1) {
         // Red Vision: preserve dark adaptation with pure deep red tones
         float luma = dot(color.rgb, float3(0.299, 0.587, 0.114));
-        return float4(luma * 1.1, 0.0, 0.0, 1.0);
+        return float4(clamp(luma * 1.1, 0.0, 1.0), 0.0, 0.0, 1.0);
     }
 
     // Standard natural tone mapping

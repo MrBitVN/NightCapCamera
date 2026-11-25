@@ -12,6 +12,7 @@ public final class AVCameraManager: NSObject, ObservableObject {
 
     // Published states for SwiftUI
     @Published public var isRunning: Bool = false
+    @Published public var isPermissionDenied: Bool = false
     @Published public var isFrontCamera: Bool = false
     @Published public var isTorchOn: Bool = false
 
@@ -62,13 +63,38 @@ public final class AVCameraManager: NSObject, ObservableObject {
     private var recordingStartTime: CMTime?
     private var currentVideoURL: URL?
 
+    private var isSessionConfigured: Bool = false
+
     public override init() {
         super.init()
     }
 
+    public func requestPermissionsAndStart() {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        switch status {
+        case .authorized:
+            DispatchQueue.main.async { self.isPermissionDenied = false }
+            configureSession()
+            startSession()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard let self = self else { return }
+                if granted {
+                    DispatchQueue.main.async { self.isPermissionDenied = false }
+                    self.configureSession()
+                    self.startSession()
+                } else {
+                    DispatchQueue.main.async { self.isPermissionDenied = true }
+                }
+            }
+        default:
+            DispatchQueue.main.async { self.isPermissionDenied = true }
+        }
+    }
+
     public func configureSession() {
         sessionQueue.async { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, !self.isSessionConfigured else { return }
             self.captureSession.beginConfiguration()
             self.captureSession.sessionPreset = .hd1920x1080
 
@@ -77,6 +103,7 @@ public final class AVCameraManager: NSObject, ObservableObject {
             self.setupAudio()
 
             self.captureSession.commitConfiguration()
+            self.isSessionConfigured = true
         }
     }
 
@@ -157,9 +184,22 @@ public final class AVCameraManager: NSObject, ObservableObject {
             videoOutput.setSampleBufferDelegate(self, queue: videoDataOutputQueue)
             captureSession.addOutput(videoOutput)
         }
+        updateVideoConnectionOrientation()
+    }
+
+    private func updateVideoConnectionOrientation() {
+        if let connection = videoOutput.connection(with: .video) {
+            if connection.isVideoOrientationSupported {
+                connection.videoOrientation = .portrait
+            }
+            if connection.isVideoMirroringSupported {
+                connection.isVideoMirrored = isFrontCamera
+            }
+        }
     }
 
     private func setupAudio() {
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
         guard let audioDevice = AVCaptureDevice.default(for: .audio) else { return }
         do {
             let aInput = try AVCaptureDeviceInput(device: audioDevice)
@@ -181,17 +221,22 @@ public final class AVCameraManager: NSObject, ObservableObject {
     public func setExposure(durationNs: Int64, iso: Float) {
         guard let device = currentDevice else { return }
         sessionQueue.async {
+            guard device.isExposureModeSupported(.custom) else { return }
             do {
                 try device.lockForConfiguration()
-                self.isManualExposure = true
                 let seconds = Double(durationNs) / 1_000_000_000.0
-                let time = CMTime(seconds: seconds, preferredTimescale: 1_000_000_000)
+                let rawTime = CMTime(seconds: seconds, preferredTimescale: 1_000_000_000)
+                let minDur = device.activeFormat.minExposureDuration
+                let maxDur = device.activeFormat.maxExposureDuration
+                let clampedTime = CMTimeMaximum(minDur, CMTimeMinimum(rawTime, maxDur))
                 let clampedIso = min(max(iso, device.activeFormat.minISO), device.activeFormat.maxISO)
-                device.setExposureModeCustom(duration: time, iso: clampedIso, completionHandler: nil)
+                device.setExposureModeCustom(duration: clampedTime, iso: clampedIso, completionHandler: nil)
                 device.unlockForConfiguration()
 
+                let actualNs = Int64(CMTimeGetSeconds(clampedTime) * 1_000_000_000)
                 DispatchQueue.main.async {
-                    self.currentExposureDurationNs = durationNs
+                    self.isManualExposure = true
+                    self.currentExposureDurationNs = actualNs
                     self.currentISO = clampedIso
                 }
             } catch {
@@ -221,12 +266,12 @@ public final class AVCameraManager: NSObject, ObservableObject {
     public func setFocusDistance(_ position: Float) {
         guard let device = currentDevice else { return }
         sessionQueue.async {
+            guard device.isFocusModeSupported(.locked),
+                  device.isLockingFocusWithCustomLensPositionSupported else { return }
             do {
                 try device.lockForConfiguration()
                 let clamped = min(max(position, 0.0), 1.0)
-                if device.isFocusModeSupported(.locked) {
-                    device.setFocusModeLocked(lensPosition: clamped, completionHandler: nil)
-                }
+                device.setFocusModeLocked(lensPosition: clamped, completionHandler: nil)
                 device.unlockForConfiguration()
                 DispatchQueue.main.async {
                     self.isManualFocus = true
@@ -242,11 +287,11 @@ public final class AVCameraManager: NSObject, ObservableObject {
     public func setInfinityFocus() {
         guard let device = currentDevice else { return }
         sessionQueue.async {
+            guard device.isFocusModeSupported(.locked),
+                  device.isLockingFocusWithCustomLensPositionSupported else { return }
             do {
                 try device.lockForConfiguration()
-                if device.isFocusModeSupported(.locked) {
-                    device.setFocusModeLocked(lensPosition: 0.0, completionHandler: nil)
-                }
+                device.setFocusModeLocked(lensPosition: 0.0, completionHandler: nil)
                 device.unlockForConfiguration()
                 DispatchQueue.main.async {
                     self.isManualFocus = false
@@ -332,9 +377,20 @@ public final class AVCameraManager: NSObject, ObservableObject {
         guard !isRecordingVideo else { return }
         sessionQueue.async { [weak self] in
             guard let self = self else { return }
+            let nextIsFront = !self.isFrontCamera
             self.captureSession.beginConfiguration()
-            self.isFrontCamera.toggle()
-            self.setupCameraDevice(position: self.isFrontCamera ? .front : .back)
+            self.setupCameraDevice(position: nextIsFront ? .front : .back)
+            DispatchQueue.main.async {
+                self.isFrontCamera = nextIsFront
+            }
+            if let connection = self.videoOutput.connection(with: .video) {
+                if connection.isVideoOrientationSupported {
+                    connection.videoOrientation = .portrait
+                }
+                if connection.isVideoMirroringSupported {
+                    connection.isVideoMirrored = nextIsFront
+                }
+            }
             self.captureSession.commitConfiguration()
         }
     }
@@ -368,13 +424,14 @@ public final class AVCameraManager: NSObject, ObservableObject {
     public func startRecordingVideo(to url: URL) {
         videoDataOutputQueue.async { [weak self] in
             guard let self = self, !self.isRecordingVideo else { return }
+            try? FileManager.default.removeItem(at: url)
             do {
                 let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
 
                 let videoSettings: [String: Any] = [
                     AVVideoCodecKey: AVVideoCodecType.h264,
-                    AVVideoWidthKey: 1920,
-                    AVVideoHeightKey: 1080
+                    AVVideoWidthKey: 1080,
+                    AVVideoHeightKey: 1920
                 ]
                 let vInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
                 vInput.expectsMediaDataInRealTime = true
@@ -383,20 +440,25 @@ public final class AVCameraManager: NSObject, ObservableObject {
                     self.assetWriterVideoInput = vInput
                 }
 
-                let audioSettings: [String: Any] = [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVNumberOfChannelsKey: 2,
-                    AVSampleRateKey: 44100,
-                    AVEncoderBitRateKey: 128000
-                ]
-                let aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-                aInput.expectsMediaDataInRealTime = true
-                if writer.canAdd(aInput) {
-                    writer.add(aInput)
-                    self.assetWriterAudioInput = aInput
+                if self.audioInput != nil {
+                    let audioSettings: [String: Any] = [
+                        AVFormatIDKey: kAudioFormatMPEG4AAC,
+                        AVNumberOfChannelsKey: 2,
+                        AVSampleRateKey: 44100,
+                        AVEncoderBitRateKey: 128000
+                    ]
+                    let aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+                    aInput.expectsMediaDataInRealTime = true
+                    if writer.canAdd(aInput) {
+                        writer.add(aInput)
+                        self.assetWriterAudioInput = aInput
+                    }
                 }
 
-                writer.startWriting()
+                guard writer.startWriting() else {
+                    print("AVAssetWriter failed to start writing: \(writer.error?.localizedDescription ?? "unknown")")
+                    return
+                }
                 self.assetWriter = writer
                 self.recordingStartTime = nil
                 self.currentVideoURL = url
@@ -418,11 +480,23 @@ public final class AVCameraManager: NSObject, ObservableObject {
                 return
             }
 
+            guard writer.status == .writing else {
+                self.assetWriter = nil
+                self.assetWriterVideoInput = nil
+                self.assetWriterAudioInput = nil
+                self.recordingStartTime = nil
+                DispatchQueue.main.async {
+                    self.isRecordingVideo = false
+                    completion(nil)
+                }
+                return
+            }
+
             self.assetWriterVideoInput?.markAsFinished()
             self.assetWriterAudioInput?.markAsFinished()
 
             writer.finishWriting {
-                let outputURL = self.currentVideoURL
+                let outputURL = (writer.status == .completed) ? self.currentVideoURL : nil
                 self.assetWriter = nil
                 self.assetWriterVideoInput = nil
                 self.assetWriterAudioInput = nil

@@ -181,7 +181,36 @@ public struct CameraView: View {
                 )
             }
 
-            // Layer 5: Toast Message Banner
+            // Layer 5: Permission Denied Overlay (if user denied camera access)
+            if cameraManager.isPermissionDenied {
+                VStack(spacing: 16) {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 44))
+                        .foregroundColor(primaryColor)
+                    Text("Camera Access Required")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Text("Please allow camera access in Settings to use NightCap Camera.")
+                        .font(.subheadline)
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                    Button("Open Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(primaryColor)
+                    .foregroundColor(.black)
+                    .cornerRadius(20)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black.opacity(0.85))
+            }
+
+            // Layer 6: Toast Message Banner
             if let toast = toastMessage {
                 VStack {
                     Text(toast)
@@ -201,8 +230,7 @@ public struct CameraView: View {
         }
         .onAppear {
             cameraManager.frameDelegate = renderer
-            cameraManager.configureSession()
-            cameraManager.startSession()
+            cameraManager.requestPermissionsAndStart()
             gyro.start()
 
             renderer.onFrameProcessed = { count in

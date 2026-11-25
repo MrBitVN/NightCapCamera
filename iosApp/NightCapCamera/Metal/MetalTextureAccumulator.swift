@@ -1,13 +1,14 @@
 import Foundation
 import Metal
+import CoreImage
 import CoreGraphics
 import UIKit
 
 public final class MetalTextureAccumulator {
     private let device: MTLDevice
 
-    public private(set) var width: Int = 1920
-    public private(set) var height: Int = 1080
+    public private(set) var width: Int = 1080
+    public private(set) var height: Int = 1920
 
     // Double buffering ping-pong textures in 16-bit float
     public private(set) var accumulatorTextureA: MTLTexture?
@@ -20,10 +21,11 @@ public final class MetalTextureAccumulator {
 
     public init(device: MTLDevice) {
         self.device = device
-        recreateTextures(width: 1920, height: 1080)
+        recreateTextures(width: 1080, height: 1920)
     }
 
     public func setDimensions(width: Int, height: Int) {
+        guard width > 0, height > 0 else { return }
         guard self.width != width || self.height != height else { return }
         self.width = width
         self.height = height
@@ -42,18 +44,34 @@ public final class MetalTextureAccumulator {
 
         accumulatorTextureA = device.makeTexture(descriptor: desc)
         accumulatorTextureB = device.makeTexture(descriptor: desc)
-        prevFrameTexture = device.makeTexture(descriptor: desc)
+
+        let prevDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        prevDesc.usage = [.shaderRead, .shaderWrite]
+        prevDesc.storageMode = .shared
+        prevFrameTexture = device.makeTexture(descriptor: prevDesc)
         useTextureAAsSource = true
 
         clearAccumulator()
     }
 
     public func clearAccumulator() {
-        guard let texA = accumulatorTextureA, let texB = accumulatorTextureB else { return }
-        let byteCount = width * height * 8 // 4 channels * 2 bytes (Float16)
+        guard width > 0, height > 0 else { return }
+        let bytesPerRow = width * 8 // 4 channels * 2 bytes (Float16)
+        let byteCount = bytesPerRow * height
         let zeros = [UInt8](repeating: 0, count: byteCount)
-        texA.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: zeros, bytesPerRow: width * 8)
-        texB.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: zeros, bytesPerRow: width * 8)
+        let region = MTLRegionMake2D(0, 0, width, height)
+
+        accumulatorTextureA?.replace(region: region, mipmapLevel: 0, withBytes: zeros, bytesPerRow: bytesPerRow)
+        accumulatorTextureB?.replace(region: region, mipmapLevel: 0, withBytes: zeros, bytesPerRow: bytesPerRow)
+
+        let prevBytesPerRow = width * 4
+        let prevZeros = [UInt8](repeating: 0, count: prevBytesPerRow * height)
+        prevFrameTexture?.replace(region: region, mipmapLevel: 0, withBytes: prevZeros, bytesPerRow: prevBytesPerRow)
         useTextureAAsSource = true
     }
 
@@ -69,44 +87,18 @@ public final class MetalTextureAccumulator {
         useTextureAAsSource.toggle()
     }
 
-    public func exportUIImage() -> UIImage? {
+    public func exportUIImage(ciContext: CIContext) -> UIImage? {
         guard let source = currentSourceTexture else { return nil }
-
-        let bytesPerRow = width * 4
-        var rawData = [UInt8](repeating: 0, count: width * height * 4)
-
-        // Read texture pixels
-        // Convert from RGBA16Float to standard 8-bit sRGB
-        let floatBytesPerRow = width * 8
-        var floatData = [Float16](repeating: 0, count: width * height * 4)
-        source.getBytes(&floatData, bytesPerRow: floatBytesPerRow, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
-
-        for i in 0..<(width * height * 4) {
-            let val = Float(floatData[i])
-            let clamped = min(max(val, 0.0), 1.0)
-            rawData[i] = UInt8(clamped * 255.0)
-        }
-
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
-
-        guard let provider = CGDataProvider(data: Data(rawData) as CFData),
-              let cgImage = CGImage(
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bitsPerPixel: 32,
-                bytesPerRow: bytesPerRow,
-                space: colorSpace,
-                bitmapInfo: bitmapInfo,
-                provider: provider,
-                decode: nil,
-                shouldInterpolate: true,
-                intent: .defaultIntent
-              ) else {
+        guard let ciImage = CIImage(mtlTexture: source, options: [.colorSpace: colorSpace]) else {
             return nil
         }
-
+        // Metal texture origin is top-left while CIImage origin is bottom-left
+        let flipped = ciImage
+            .transformed(by: CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -ciImage.extent.height))
+        guard let cgImage = ciContext.createCGImage(flipped, from: flipped.extent) else {
+            return nil
+        }
         return UIImage(cgImage: cgImage, scale: 1.0, orientation: .up)
     }
 }
