@@ -96,7 +96,7 @@ jobs:
   build-ios:
     name: Build iOS (Swift Native -> IPA)
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_target == 'all' || inputs.build_target == 'ios' }}
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository
